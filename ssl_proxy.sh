@@ -15,7 +15,7 @@ echo -e "\( {BLUE} \){BOLD}│     Caddy + Cloudflare 通用反代智能部署�
 echo -e "\( {BLUE} \){BOLD}└──────────────────────────────────────────────────┘${NC}"
 
 # 创建目录
-mkdir -p /etc/caddy
+mkdir -p /etc/caddy/ssl
 
 # 检查命令函数
 check_cmd() {
@@ -57,14 +57,14 @@ if [ "$CADDY_READY" = false ]; then
         echo -e "\( {YELLOW} ℹ 正在安装 Caddy... \){NC}"
         curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
         curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
-        apt update -y && apt install -y caddy
+        apt update -y && apt install -y caddy || { echo -e "\( {RED} ✖ Caddy 安装失败 \){NC}"; exit 1; }
     fi
     echo -e "\( {YELLOW} ℹ 正在注入 Cloudflare 插件... \){NC}"
-    /usr/bin/caddy add-package github.com/caddy-dns/cloudflare
+    /usr/bin/caddy add-package github.com/caddy-dns/cloudflare || { echo -e "\( {RED} ✖ 插件注入失败 \){NC}"; exit 1; }
     echo -e "\( {GREEN} ✔ Caddy 及插件安装完成 \){NC}"
 fi
 
-# ==================== 3. 参数收集与证书智能扫描（完整保留原逻辑） ====================
+# ==================== 3. 参数收集与证书智能扫描 ====================
 echo -e "\n\( {BLUE} \){BOLD}▶ [步骤 3/5] 配置参数收集与证书扫描...${NC}"
 echo -e "\( {BLUE}────────────────────────────────────────────────── \){NC}"
 
@@ -73,15 +73,14 @@ if [ -z "$DOMAIN" ]; then
     echo -e "\( {RED} ✖ 域名不能为空！ \){NC}"; exit 1
 fi
 
-read -p " 请输入后端反代地址 (例如: 127.0.0.1:8080 或 http://192.168.1.100:3001): " BACKEND
+read -p " 请输入后端反代地址 (例如: 127.0.0.1:8080): " BACKEND
 if [ -z "$BACKEND" ]; then
     echo -e "\( {RED} ✖ 后端地址不能为空！ \){NC}"; exit 1
 fi
 
-# 证书路径定义
+# 证书扫描
 CERT_FILE="/etc/caddy/ssl/fullchain.pem"
 KEY_FILE="/etc/caddy/ssl/privkey.pem"
-mkdir -p /etc/caddy/ssl
 
 POSSIBLE_CERTS=(
     "$CERT_FILE"
@@ -112,55 +111,62 @@ for idx in "${!POSSIBLE_CERTS[@]}"; do
     if [ -s "$cert_path" ] && [ -s "$key_path" ]; then
         if openssl x509 -in "$cert_path" -noout -text 2>/dev/null | grep -q "$DOMAIN"; then
             echo -e "${GREEN} ✔ 发现匹配证书: \( cert_path \){NC}"
-            if [ "$cert_path" != "$CERT_FILE" ]; then
-                ln -sf "$cert_path" "$CERT_FILE"
-                ln -sf "$key_path" "$KEY_FILE"
-            fi
+            ln -sf "$cert_path" "$CERT_FILE"
+            ln -sf "$key_path" "$KEY_FILE"
             USE_EXISTING_CERT=true
             break
         fi
     fi
 done
 
-# 未找到证书 → 手动提供
+# 未找到证书时允许手动提供
 if [ "$USE_EXISTING_CERT" = false ]; then
     echo -e "\( {YELLOW} ℹ 未发现本地匹配证书 \){NC}"
     read -p " 是否手动提供证书？(y/n，默认 n): " PROVIDE_CERT
     
     if [[ "\( PROVIDE_CERT" =\~ ^[Yy](es)? \) ]]; then
-        echo -e "\n 1) 输入证书文件路径    2) 直接粘贴证书内容"
+        echo -e "\n 1) 输入文件路径   2) 直接粘贴证书内容"
         read -p " 请选择 [1/2]: " CERT_INPUT_MODE
         
         if [ "$CERT_INPUT_MODE" == "1" ]; then
-            read -p " 证书完整路径: " USER_CERT
-            read -p " 私钥完整路径: " USER_KEY
+            read -p " 证书路径: " USER_CERT
+            read -p " 私钥路径: " USER_KEY
             if [ -s "$USER_CERT" ] && [ -s "$USER_KEY" ]; then
                 ln -sf "$USER_CERT" "$CERT_FILE"
                 ln -sf "$USER_KEY" "$KEY_FILE"
                 USE_EXISTING_CERT=true
                 echo -e "\( {GREEN} ✔ 证书导入成功 \){NC}"
+            else
+                echo -e "\( {RED} ✖ 文件不存在 \){NC}"
             fi
-            
         elif [ "$CERT_INPUT_MODE" == "2" ]; then
-            echo -e "\( {YELLOW}请粘贴证书内容（以 -----BEGIN 开头），结束后输入 EOF \){NC}"
+            echo -e "\( {YELLOW}┌─────────────────── 粘贴证书 ───────────────────┐ \){NC}"
+            echo -e "\( {YELLOW}请粘贴证书内容，结束后输入 EOF \){NC}"
             rm -f "$CERT_FILE"
-            while IFS= read -r line; do [[ "$line" == "EOF" ]] && break; echo "$line" >> "$CERT_FILE"; done
-            
+            while IFS= read -r line; do
+                [[ "$line" == "EOF" ]] && break
+                echo "$line" >> "$CERT_FILE"
+            done
+
             echo -e "\( {YELLOW}请粘贴私钥内容，结束后输入 EOF \){NC}"
             rm -f "$KEY_FILE"
-            while IFS= read -r line; do [[ "$line" == "EOF" ]] && break; echo "$line" >> "$KEY_FILE"; done
-            
+            while IFS= read -r line; do
+                [[ "$line" == "EOF" ]] && break
+                echo "$line" >> "$KEY_FILE"
+            done
+
             if [ -s "$CERT_FILE" ] && [ -s "$KEY_FILE" ] && openssl x509 -in "$CERT_FILE" -noout >/dev/null 2>&1; then
                 USE_EXISTING_CERT=true
-                echo -e "\( {GREEN} ✔ 证书粘贴成功 \){NC}"
+                echo -e "\( {GREEN} ✔ 证书粘贴并验证成功 \){NC}"
             else
-                echo -e "\( {RED} ✖ 证书验证失败 \){NC}"
+                echo -e "\( {RED} ✖ 证书验证失败，将使用自动申请 \){NC}"
+                rm -f "$CERT_FILE" "$KEY_FILE"
             fi
         fi
     fi
 fi
 
-# 其余参数
+# 其他参数
 read -p " 请输入 HTTPS 端口 (默认 443): " EX_PORT
 EX_PORT=${EX_PORT:-443}
 read -p " 请输入 HTTP 端口 (默认 80): " HTTP_PORT
@@ -169,17 +175,17 @@ read -p " 请输入邮箱 (用于证书通知): " MY_EMAIL
 
 if [ "$USE_EXISTING_CERT" = false ]; then
     echo -e "\n 请选择证书申请方式:"
-    echo -e "  1) Cloudflare DNS 挑战（推荐）"
+    echo -e "  1) Cloudflare DNS 挑战（推荐，无需开 80 端口）"
     echo -e "  2) HTTP 挑战"
     read -p " 选择 [1/2]: " AUTH_MODE
 fi
 
-# ==================== 4. 生成/追加 Caddy 配置 ====================
+# ==================== 4. 生成 Caddy 配置（追加模式） ====================
 echo -e "\n\( {BLUE} \){BOLD}▶ [步骤 4/5] 生成 Caddy 配置...${NC}"
 
 CONFIG_FILE="/etc/caddy/Caddyfile"
 
-# 如果文件不存在则创建基础全局配置
+# 创建全局配置（仅当文件不存在时）
 if [ ! -f "$CONFIG_FILE" ]; then
     cat <<BASE > "$CONFIG_FILE"
 {
@@ -188,6 +194,9 @@ if [ ! -f "$CONFIG_FILE" ]; then
     https_port $EX_PORT
 }
 BASE
+    echo -e "\( {GREEN} ✔ 已创建新 Caddyfile \){NC}"
+else
+    echo -e "\( {YELLOW} ℹ 检测到已有 Caddyfile，正在追加配置 \){NC}"
 fi
 
 # 追加站点配置
@@ -245,9 +254,7 @@ SITE
     fi
 fi
 
-echo -e "${GREEN} ✔ 配置已追加到 \( CONFIG_FILE \){NC}"
-
-# ==================== 5. 服务配置与启动 ====================
+# ==================== 5. 服务启动 ====================
 cat <<SVC > /etc/systemd/system/caddy.service
 [Unit]
 Description=Caddy
@@ -273,6 +280,6 @@ systemctl enable --now caddy >/dev/null 2>&1
 systemctl restart caddy >/dev/null 2>&1
 
 echo -e "\n\( {GREEN} \){BOLD}🎉 部署完成！${NC}"
-echo -e "🌐 访问地址: ${GREEN}https://\( DOMAIN \){NC}"
-echo -e "📄 配置路径: \( {BLUE}/etc/caddy/Caddyfile \){NC}"
-echo -e "🔍 查看日志: journalctl -u caddy -f"
+echo -e "🌐 访问地址 → ${GREEN}https://\( DOMAIN \){NC}"
+echo -e "📄 配置位置 → \( {BLUE}/etc/caddy/Caddyfile \){NC}"
+echo -e "🔍 查看日志 → \( {YELLOW}journalctl -u caddy -f \){NC}"
