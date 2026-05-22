@@ -140,15 +140,14 @@ if [ "$USE_EXISTING_CERT" = false ]; then
                 echo -e "\( {RED} ✖ 文件不存在 \){NC}"
             fi
         elif [ "$CERT_INPUT_MODE" == "2" ]; then
-            echo -e "\( {YELLOW}┌─────────────────── 粘贴证书 ───────────────────┐ \){NC}"
-            echo -e "\( {YELLOW}请粘贴证书内容，结束后输入 EOF \){NC}"
+            echo -e "\( {YELLOW}请粘贴证书内容（以 -----BEGIN 开头），结束后输入 EOF \){NC}"
             rm -f "$CERT_FILE"
             while IFS= read -r line; do
                 [[ "$line" == "EOF" ]] && break
                 echo "$line" >> "$CERT_FILE"
             done
 
-            echo -e "\( {YELLOW}请粘贴私钥内容，结束后输入 EOF \){NC}"
+            echo -e "\( {YELLOW}请粘贴私钥内容（以 -----BEGIN 开头），结束后输入 EOF \){NC}"
             rm -f "$KEY_FILE"
             while IFS= read -r line; do
                 [[ "$line" == "EOF" ]] && break
@@ -175,7 +174,7 @@ read -p " 请输入邮箱 (用于证书通知): " MY_EMAIL
 
 if [ "$USE_EXISTING_CERT" = false ]; then
     echo -e "\n 请选择证书申请方式:"
-    echo -e "  1) Cloudflare DNS 挑战（推荐，无需开 80 端口）"
+    echo -e "  1) Cloudflare DNS 挑战（推荐）"
     echo -e "  2) HTTP 挑战"
     read -p " 选择 [1/2]: " AUTH_MODE
 fi
@@ -185,7 +184,6 @@ echo -e "\n\( {BLUE} \){BOLD}▶ [步骤 4/5] 生成 Caddy 配置...${NC}"
 
 CONFIG_FILE="/etc/caddy/Caddyfile"
 
-# 创建全局配置（仅当文件不存在时）
 if [ ! -f "$CONFIG_FILE" ]; then
     cat <<BASE > "$CONFIG_FILE"
 {
